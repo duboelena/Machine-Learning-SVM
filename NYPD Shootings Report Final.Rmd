@@ -1,0 +1,188 @@
+---
+title: "NYPD Shooting Analysis Final Presentation"
+output: pdf_document
+date: "2025-02-28"
+---
+
+# NYPD Shooting Analysis
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r read in data}
+shootings <- read.csv('https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD')
+```
+
+## Loading Data, Packages, and Quick Clean Up
+
+I am loading in a few different packages to help me clean and transform the data into the right format. I am also importing some packages that will be useful for visualizations and a random forest classification analysis. 
+
+```{r pre}
+# Summary statistics for each column
+library(dplyr)
+library(lubridate)
+library(hms)
+library(randomForest)
+library(caTools)
+library(caret)
+summary(shootings)
+
+# Check for NA values
+sapply(shootings, function(x) sum(is.na(x)))
+
+# Remove NA values
+shootings <- na.omit(shootings)
+
+# Only need 16/20 columns
+shootings <- shootings[c(0:16)]
+
+# Adjust for correct data types - using lubridate and hms, and change other columns to easier data types
+shootings$OCCUR_DATE <- mdy(shootings$OCCUR_DATE)
+shootings$OCCUR_TIME <- as_hms(shootings$OCCUR_TIME)
+shootings$STATISTICAL_MURDER_FLAG <- as.logical(shootings$STATISTICAL_MURDER_FLAG)
+```
+
+Before I start diving into the data, I have cleaned it up a bit by doing the following: removing the last four columns which I do not plan to explore or use, changing the data type of the columns pertaining to date and time so they are easier to work with, and removing NA values. As I work more closely with the data, I may remove other columns or values depending on the model or visualizations I plan to produce. For now, I am keeping values that have "unknown" but may choose to remove these values depending on the aspects and visualizations I choose to focus on in this report. 
+
+
+## Exploration
+```{r exploration}
+# Explore the number of shootings based on each burrow 
+boro_counts <- shootings %>%
+  count(BORO)
+print(boro_counts)
+
+# Explore the number of shootings within each month of the year
+by_month <- shootings %>%
+  count(month = month(OCCUR_DATE))
+print(by_month)
+
+by_year <- shootings %>%
+  count(year = year(OCCUR_DATE))
+print(by_year)
+
+# Explore the number of shootings within each hour of the day
+by_hour <- shootings %>% 
+  group_by(hour(shootings$OCCUR_TIME)) %>% 
+  summarise(count = n())
+
+```
+## Plots
+
+```{r pressure, echo=FALSE}
+# Examining Timing of shootings by month of year, year, and by hour in the day
+plot(by_hour, xlab = "Hour in the Day",
+     ylab = "Number of Shootings",
+     main = "Number of Shooting during each Hour of the Day")
+plot(by_month, xlab = "Month",
+     ylab = "Number of Shootings",
+     main = "Number of Shootings by Month")
+plot(by_year, xlab = "Year",
+     ylab = "Number of Shootings",
+     main = "Number of Shootings per Year")
+```
+```{r demographic plots}
+# Plot number of shootings based on age group of victims
+# Plot the number of men/women in each neighborhood
+ggplot(shootings, aes(x = BORO, fill = VIC_SEX)) +
+  geom_bar() +
+  labs(title = "Number of Shootings by Borough",
+  x = "Borough",
+  y = "Number of Incidents") +
+  theme_minimal() +
+theme(legend.position = "right")
+
+# Plot shootings based on sex (M/F/unknown)
+shootings <- shootings %>%
+  filter(VIC_SEX != "U")
+barplot(table(shootings$VIC_SEX), 
+        main = "Number of Shootings by Victim Sex",
+        xlab = "Age Group",
+        ylab = "Count")
+
+shootings <- shootings %>%
+  filter(VIC_AGE_GROUP != "UNKNOWN", VIC_AGE_GROUP != "1022")
+ggplot(shootings, aes(x = VIC_AGE_GROUP, fill = VIC_SEX)) +
+  geom_bar() +
+  labs(title = "Number of Shootings by Age Group",
+  x = "Age Group",
+  y = "Number of Incidents") +
+  theme_minimal() +
+theme(legend.position = "right")
+
+# Plot the number of shootings in each neighborhood
+ggplot(shootings, aes(x = BORO, fill = VIC_AGE_GROUP)) +
+  geom_bar() +
+  labs(title = "Number of Shootings by Borough and Age Group",
+  x = "Borough",
+  y = "Number of Incidents") +
+  theme_minimal() +
+theme(legend.position = "right")
+```
+
+Now that we have looked at some of the data on the victims and the location of these shootings, let's construct a random forest model to classify the data.
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r model, eval=FALSE, include=FALSE}
+# Linear model
+shootings$OCCUR_HOUR <- hour(shootings$OCCUR_TIME) 
+shootings$OCCUR_MONTH <- month(shootings$OCCUR_DATE)
+shootings$VIC_SEX <- ifelse(shootings$VIC_SEX == "F", 1, 0)
+shootings <- shootings %>%
+  filter(PERP_SEX != "U")
+shootings$PERP_SEX <- ifelse(shootings$PERP_SEX == "F", 1, 0)
+shootings <- shootings[shootings$LOCATION_DESC != "(null)", ]
+shootings$LOCATION_DESC <- as.factor(shootings$LOCATION_DESC)
+shootings$VIC_AGE_GROUP <- as.factor(shootings$VIC_AGE_GROUP)
+shootings <- shootings[is.finite(shootings$time), ]
+
+shootings$time <- as.numeric(as.integer(shootings$OCCUR_TIME))
+lm <- lm(sqrt(time) ~ BORO + VIC_AGE_GROUP + I(OCCUR_HOUR^2) + PERP_SEX, data = shootings)
+summary(lm)
+plot(lm)
+
+```
+```{r random forest}
+# Cleaning some of the data
+shootings <- na.omit(shootings)
+shootings <- subset(shootings, select = -PRECINCT)
+shootings <- subset(shootings, select = -STATISTICAL_MURDER_FLAG)
+shootings <- subset(shootings, select = -LOC_CLASSFCTN_DESC)
+shootings$BORO <- as.factor(shootings$BORO)
+shootings <- shootings[shootings$LOCATION_DESC != "(null)", ]
+shootings$LOCATION_DESC <- as.factor(shootings$LOCATION_DESC)
+shootings <- shootings[shootings$PERP_SEX != "(null)", ]
+
+split <- sample.split(shootings$BORO, SplitRatio = 0.9)
+train <- subset(shootings, split == TRUE)
+test <- subset(shootings, split == FALSE)
+
+# Evaluate the model's accuracy
+model <- randomForest(BORO ~ ., data=train, ntree=200, importance=TRUE)
+predictions <- as.factor(predict(model, test))
+accuracy <- sum(predictions == test$BORO) / nrow(test)
+print(paste("Accuracy:", accuracy))
+
+# Confusion matrix
+table(predictions, test$BORO)
+cm <- confusionMatrix(predictions, test$BORO)
+cm_df <- as.data.frame(as.table(cm$table))
+ggplot(data = cm_df, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  scale_fill_gradient(low = "grey", high = "steelblue") +
+  labs(title = "Confusion Matrix Heatmap", x = "Predicted", y = "Actual") +
+  theme_minimal()
+
+# Importance plot
+importance <- importance(model)
+varImpPlot(model, main = "Variable Importance")
+```
+
+## Bias & Conclusion
+
+Bias is present in this data set for a variety of reasons. Firstly, the way the data is collected presents potential bias as there shooting reports were most likley filed by different officers in a variety of precincts and we cannot be aware of their personal biases; they may have been more or less inclined to report certain incidents due to personal biases. Additionally, changes in legislature may have affected reporting of events. We also only have the data from 2006 to 2023 so we cannot extend our analysis from this timeline. Additionally, my little knowledge of NYC which is highly influenced by fictional media (TV, Movie, etc), had given me an inaccurate impression of which neighborhoods are more or less dangerous. 
+
+To mitigate this bias, my conclusions are solely based on the data provided and the model that I attempted in this report. Additionally, I have provided the code and rationale behind my methods and analysis. Improved iterations of the model based on other variables, as well as other modeling methods may provide more insights into the relationship between the victim's age, the neighborhood, and the time of day for the shooting.
+
